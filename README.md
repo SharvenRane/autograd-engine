@@ -1,97 +1,80 @@
-# Autograd Engine
+# autograd-engine
 
-Micrograd-style automatic differentiation engine built from scratch in Python
+A small reverse mode automatic differentiation engine that works on scalar values, in the spirit of micrograd. Every number you compute with is wrapped in a `Value` object. As you combine values with arithmetic and nonlinearities, the engine quietly records a graph of how each result depends on its inputs. When you call `backward()` on a final scalar, it walks that graph in reverse and fills in the derivative of the output with respect to every value that fed into it.
 
-`autograd` `backpropagation` `from-scratch` `deep-learning` `python`
+The goal here is to make the mechanics of backpropagation concrete. There is no array library doing the heavy lifting and no hidden magic. Each operation knows two things: how to compute its output, and how to push gradient from its output back onto its inputs.
 
-## Overview
+## What it supports
 
-This repository implements a complete pipeline for **autograd engine**, covering
-data preprocessing, model training, evaluation, and deployment.
+The `Value` type implements:
 
-## Features
+* Addition, subtraction, multiplication, and division
+* Raising to a constant power
+* `tanh`, `relu`, `exp`, and `log`
+* `backward()` for reverse mode gradient computation
+* `zero_grad()` to reset gradients across the whole graph
 
-- Clean, modular PyTorch implementation
-- Reproducible experiments with MLflow tracking
-- Comprehensive evaluation with standard benchmarks
-- ONNX export for production deployment
-- Detailed documentation and usage examples
+Operations accept plain Python numbers as well as other `Value` objects, so you can write expressions like `3 * x ** 2 + 2 * x + 1` and read them the way you would on paper.
 
-## Installation
+## How it works
 
-```bash
-git clone https://github.com/YOUR_USERNAME/autograd-engine.git
-cd autograd-engine
-pip install -r requirements.txt
-```
+Each operation creates a new output `Value` that remembers its parents and stores a local `_backward` closure. That closure knows the chain rule contribution for the specific op. For example a multiply node `z = x * y` stores the rule that the gradient flowing into `z` lands on `x` scaled by `y.data`, and on `y` scaled by `x.data`.
 
-## Quick Start
-
-```python
-from src.model import Model
-from src.trainer import Trainer
-from src.config import Config
-
-config = Config.from_yaml("configs/default.yaml")
-model = Model(config)
-trainer = Trainer(model, config)
-trainer.train()
-```
-
-## Project Structure
-
-```
-autograd-engine/
-├── src/
-│   ├── model.py        # Model architecture
-│   ├── dataset.py      # Data loading and preprocessing
-│   ├── trainer.py      # Training loop
-│   ├── evaluate.py     # Evaluation metrics
-│   └── utils.py        # Helper utilities
-├── configs/
-│   └── default.yaml    # Default configuration
-├── notebooks/
-│   └── exploration.ipynb
-├── tests/
-│   └── test_model.py
-├── requirements.txt
-└── README.md
-```
-
-## Results
-
-| Model | Dataset | Metric | Score |
-|-------|---------|--------|-------|
-| Baseline | Standard | Primary | - |
-| Ours | Standard | Primary | - |
+Calling `backward()` does three things. First it builds a topological order of the graph so that every node comes after all of its inputs. Then it seeds the gradient of the output node to one. Finally it visits the nodes in reverse topological order, running each local rule, which accumulates partial derivatives into the `.grad` field of every node. Accumulation matters: when a single value feeds into several places, its gradient is the sum of every path, and the `+=` in each rule handles that correctly.
 
 ## Usage
 
-```bash
-# Train
-python train.py --config configs/default.yaml
+```python
+from src.engine import Value
 
-# Evaluate
-python evaluate.py --checkpoint checkpoints/best.pth
+x = Value(3.0)
+f = 3 * x ** 2 + 2 * x + 1   # f = 3x^2 + 2x + 1
+f.backward()
 
-# Export to ONNX
-python export.py --checkpoint checkpoints/best.pth
+print(f.data)   # 34.0
+print(x.grad)   # 32.0, which is 6x + 2 at x = 3
 ```
 
-## References
+A tiny single neuron looks like this:
 
-- Relevant papers and resources for autograd engine
+```python
+from src.engine import Value
 
-## License
+x1, x2 = Value(0.5), Value(-1.5)
+w1, w2 = Value(1.1), Value(-0.7)
+b = Value(0.05)
 
-MIT
+out = (x1 * w1 + x2 * w2 + b).tanh()
+out.backward()
 
-# update 1
+print(w1.grad, w2.grad, b.grad)  # gradients for a gradient descent step
+```
 
-# update 3
+## Tests
 
-# update 12
+The test suite checks three kinds of things. Forward values are compared against ordinary arithmetic. Gradients are compared against derivatives worked out by hand for cases like products, polynomials, reused variables, `tanh`, `relu`, and division. The remaining tests build mixed expressions and a small neuron, then confirm that both the forward values and the gradients match `torch.autograd` to within floating point tolerance. PyTorch acts as an independent reference, so agreement is strong evidence the engine is correct.
 
-# update 13
+Run them with the project interpreter:
 
-# update 14
+```
+python -m pytest tests/ -q
+```
+
+On the local run all 16 tests passed.
+
+## Layout
+
+```
+autograd-engine/
+  src/
+    __init__.py
+    engine.py        the Value type and the autodiff logic
+  tests/
+    test_engine.py   forward, hand computed, and torch cross checks
+  requirements.txt
+  README.md
+```
+
+## Requirements
+
+Python 3.10 or newer, plus `pytest` and `torch`. PyTorch is used only by the tests as a reference; the engine itself depends on nothing beyond the standard library.
